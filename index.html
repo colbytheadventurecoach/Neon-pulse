@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEON PULSE — VR Rhythm Shooter</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;800&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;background:#0a0018;color:#fff;font-family:Orbitron,system-ui,sans-serif;overflow:hidden;touch-action:none}
+  canvas{display:block}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 70%,rgba(255,43,214,.25),rgba(10,0,24,.92) 60%);z-index:5;padding:20px;box-sizing:border-box;overflow:auto}
+  #card{max-width:520px;width:100%;text-align:center}
+  h1{font-weight:800;font-size:clamp(34px,9vw,60px);margin:0;letter-spacing:.06em;background:linear-gradient(180deg,#ffd23f,#ff2bd6 70%);-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 0 18px rgba(255,43,214,.6))}
+  .sub{color:#00e5ff;letter-spacing:.3em;font-size:12px;margin:6px 0 22px}
+  button{font:800 16px Orbitron,sans-serif;letter-spacing:.12em;color:#0a0018;background:#00e5ff;border:0;border-radius:10px;padding:16px 22px;width:100%;margin:7px 0;cursor:pointer;box-shadow:0 0 22px rgba(0,229,255,.55)}
+  button.alt{background:transparent;color:#ff2bd6;border:2px solid #ff2bd6;box-shadow:0 0 18px rgba(255,43,214,.35)}
+  button:disabled{opacity:.35;box-shadow:none;cursor:default}
+  .legend{font:500 13px/1.7 system-ui,sans-serif;color:#d9cfee;text-align:left;margin:18px 0 6px;padding:14px 16px;border:1px solid rgba(255,255,255,.15);border-radius:10px;background:rgba(10,0,24,.6)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px}
+  #note,#res{font:500 13px/1.5 system-ui,sans-serif;color:#ffd23f;margin-top:10px;min-height:1.2em}
+  #res{color:#fff;font-size:15px;white-space:pre-line}
+  #tag{position:fixed;left:12px;bottom:10px;font:500 11px system-ui;color:rgba(255,255,255,.55);z-index:4}
+</style>
+</head>
+<body>
+<div id="ui"><div id="card">
+  <h1>NEON PULSE</h1>
+  <div class="sub">RHYTHM · SHOOTER · WORKOUT</div>
+  <div id="res"></div>
+  <button id="bvr" disabled>ENTER VR</button>
+  <button id="bflat" class="alt">PREVIEW ON THIS SCREEN</button>
+  <div id="note">Checking for a VR headset…</div>
+  <div class="legend">
+    <div><span class="dot" style="background:#ffd23f"></span><b>Yellow drones</b> — shoot when the ring closes</div>
+    <div><span class="dot" style="background:#00e5ff"></span><b>Cyan orbs</b> — punch with your LEFT hand</div>
+    <div><span class="dot" style="background:#ff2bd6"></span><b>Pink orbs</b> — punch with your RIGHT hand</div>
+    <div><span class="dot" style="background:#ff3355"></span><b>Red beams &amp; walls</b> — squat under, lean around</div>
+  </div>
+</div></div>
+<div id="tag"></div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js';
+
+//<PURE>
+const BPM = 112, STEP = 60 / BPM / 4, BEAT = STEP * 4, SWING = 0.14;
+const stepTime = s => s * STEP + ((s & 1) ? SWING * STEP : 0);
+const evTime = e => stepTime(Math.floor(e.s)) + (e.s % 1) * STEP;
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+const SECTIONS = [['intro',4],['groove',16],['build',4],['drop',16],['break',8],['build',4],['drop',16],['outro',4]];
+const CHORDS = [
+  {root:40, notes:[52,55,59,62,66]},  // Em9
+  {root:36, notes:[48,52,55,59]},     // Cmaj7
+  {root:33, notes:[57,60,64,67]},     // Am7
+  {root:35, notes:[59,62,66,69]},     // Bm7
+];
+const PENT = [0,3,5,7,10];
+const FUNK = ['R..R.o.7R.R..o5.','R.R..o..R.7R.o..','R..o.R.5R..R7.o.'];
+const WOB = [
+  [[0,4,2],[4,4,4],[8,4,3],[12,2,8],[14,2,1]],
+  [[0,6,4],[6,2,1],[8,4,2],[12,4,6]],
+  [[0,2,1],[2,2,1],[4,4,3],[8,8,4]],
+  [[0,8,2],[8,2,8],[10,2,8],[12,4,3]],
+];
+
+function generateSong(seed = 7){
+  const R = mulberry32(seed), ev = [], map = [], secs = [];
+  const pick = a => a[Math.floor(R() * a.length)];
+  const E = (type, s, p = {}) => ev.push({type, s, ...p});
+  const degToMidi = d => 52 + PENT[d % 5] + 12 * Math.floor(d / 5);
+  const mkMotif = () => {
+    const m = []; let deg = 5 + Math.floor(R() * 4);
+    const rhythm = pick(['x..x.x..x...x.x.','x.x..x.x..x.....','..x.x..x.x.x..x.','x...x.x...x.xx..']);
+    for (let i = 0; i < 16; i++) if (rhythm[i] === 'x') {
+      deg = Math.max(2, Math.min(11, deg + pick([-2,-1,-1,1,1,2])));
+      m.push({i, deg, d: pick([1,2,2,3])});
+    }
+    return m;
+  };
+  // beat-map helpers
+  const blocked = new Set(); let dSide = 1;
+  const add = (type, s, p = {}) => { if (!blocked.has(s)) map.push({type, s, ...p}); };
+  const obst = (type, s, p = {}) => { blocked.add(s); map.push({type, s, ...p}); };
+  const drone = s => { dSide = -dSide; add('drone', s, {x: dSide * (0.8 + R() * 2.4), y: 1.1 + R() * 1.7, z: -(9 + R() * 5)}); };
+  const YO = {hi: 0.22, mid: -0.28, low: -0.95};
+  const orb = (s, hand, h = 'mid', wide = 0) => add('orb', s, {hand, h, x: (hand === 'L' ? -1 : 1) * (0.32 + wide + R() * 0.1), yo: YO[h]});
+  const both = (s, h) => { orb(s, 'L', h); orb(s, 'R', h); };
+
+  let bar = 0, dropN = 0;
+  for (const [name, bars] of SECTIONS) {
+    secs.push({name, startStep: bar * 16, bars});
+    if (name === 'drop') dropN++;
+    const motifA = mkMotif(), motifB = mkMotif();
+    const bassPat = [pick(FUNK), pick(FUNK)];
+    const wobPat = [0,1,2,3].map(() => pick(WOB));
+    const grooveP = []; for (let i = 0; i < bars; i++) grooveP.push(i < 2 ? 0 : Math.floor(R() * 4));
+    for (let b = 0; b < bars; b++, bar++) {
+      const s0 = bar * 16, ch = CHORDS[Math.floor(b / 2) % 4];
+      if (name === 'intro') {
+        [0,4,8,12].forEach(i => E('kick', s0 + i, {v: .9}));
+        if (b >= 1) [2,6,10,14].forEach(i => E('hat', s0 + i, {v: .45}));
+        if (b >= 2) [4,12].forEach(i => E('clap', s0 + i, {v: .7}));
+        if (b % 2 === 0) E('pad', s0, {notes: ch.notes, d: 32, v: .8});
+        if (b === 3) [12,13,14,15].forEach((i,k) => E('snare', s0 + i, {v: .4 + k * .15}));
+        if (b === 2) { drone(s0); drone(s0 + 8); }
+        if (b === 3) { orb(s0,'L'); orb(s0 + 4,'R'); drone(s0 + 8); drone(s0 + 12); }
+      }
+      else if (name === 'groove') {
+        if (b === 0) E('crash', s0);
+        [0,7,10].forEach(i => E('kick', s0 + i, {v: 1}));
+        [4,12].forEach(i => E('snare', s0 + i, {v: 1}));
+        for (let i = 0; i < 16; i++) { if (i % 2 === 0) E('hat', s0 + i, {v: i % 4 === 2 ? .6 : .35}); else if (R() < .3) E('hat', s0 + i, {v: .2}); }
+        const bp = bassPat[b % 2];
+        for (let i = 0; i < 16; i++) { const c = bp[i]; if (c !== '.') E('bass', s0 + i, {n: ch.root + ({R:0,o:12,'5':7,'7':10})[c], d: 1.4, v: .9}); }
+        [4,7,14].forEach(i => E('stab', s0 + i, {notes: ch.notes, d: 1, v: .6}));
+        if (b >= 4) (b % 2 ? motifB : motifA).forEach(n => E('lead', s0 + n.i, {n: degToMidi(n.deg) + 12, d: n.d, v: .8}));
+        if (b % 8 === 7) [13,14,15].forEach(i => E('snare', s0 + i, {v: .6}));
+        // map
+        if (b > 0 && b % 4 === 0) obst(b === 8 ? 'wall' : 'duck', s0, {side: 'L'});
+        const p = grooveP[b];
+        if (p === 0) { drone(s0); orb(s0 + 4,'L'); drone(s0 + 8); orb(s0 + 12,'R'); }
+        if (p === 1) { orb(s0,'L'); orb(s0 + 4,'R'); orb(s0 + 8,'L','hi'); orb(s0 + 12,'R','hi'); }
+        if (p === 2) { drone(s0); drone(s0 + 2); orb(s0 + 4,'R'); drone(s0 + 8); orb(s0 + 12,'L'); }
+        if (p === 3) { orb(s0,'L','low'); drone(s0 + 4); orb(s0 + 8,'R','low'); drone(s0 + 12); }
+      }
+      else if (name === 'build') {
+        if (b === 0) E('riser', s0, {d: bars * 16});
+        if (b % 2 === 0) E('pad', s0, {notes: ch.notes, d: 32, v: 1});
+        if (b < 2) [0,4,8,12].forEach(i => E('kick', s0 + i, {v: .9}));
+        const roll = [[0,8],[0,4,8,12],[0,2,4,6,8,10,12,14],[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]][Math.min(3, b + (4 - bars))] || [];
+        roll.forEach((i,k) => E('snare', s0 + i, {v: .45 + .5 * (b / bars) + (b === bars - 1 ? k * .02 : 0)}));
+        // map
+        const bb = b + (4 - bars);
+        if (bb === 0) { orb(s0,'L'); orb(s0 + 8,'R'); }
+        if (bb === 1) { orb(s0,'L'); orb(s0 + 4,'R'); orb(s0 + 8,'L'); orb(s0 + 12,'R'); }
+        if (bb === 2) { orb(s0,'L','hi'); orb(s0 + 4,'R','hi'); drone(s0 + 6); orb(s0 + 8,'L','hi'); orb(s0 + 12,'R','hi'); drone(s0 + 14); }
+        if (bb === 3) for (let i = 0; i < 6; i++) orb(s0 + i * 2, i % 2 ? 'R' : 'L');
+      }
+      else if (name === 'drop') {
+        if (b % 8 === 0) E('crash', s0);
+        [0,10].forEach(i => E('kick', s0 + i, {v: 1}));
+        if (b % 2) E('kick', s0 + 7, {v: .9});
+        [4,12].forEach(i => { E('snare', s0 + i, {v: 1}); E('clap', s0 + i, {v: .8}); });
+        for (let i = 0; i < 16; i++) E('hat', s0 + i, {v: i % 2 ? .2 : .42});
+        const wp = (b % 8 === 7) ? WOB[3] : wobPat[b % 4];
+        wp.forEach(([st, len, rate]) => E('wob', s0 + st, {n: ch.root + pick([0,0,0,12,10,3]), d: len, r: rate, v: 1}));
+        if (dropN === 2 && b % 4 >= 2) (b % 2 ? motifB : motifA).forEach(n => E('lead', s0 + n.i, {n: degToMidi(n.deg) + 12, d: n.d, v: .7}));
+        if (b % 8 === 7) [12,13,14,15].forEach(i => E('snare', s0 + i, {v: .7}));
+        // map
+        if (b === 0) obst('duck', s0, {});
+        else if (b % 2 === 0) { const k = b / 2; if (k % 2) obst('wall', s0, {side: (k % 4 === 1) ? 'L' : 'R'}); else obst('duck', s0, {}); }
+        const p = b === 0 ? 0 : Math.floor(R() * 4);
+        if (p === 0) { drone(s0); drone(s0 + 2); drone(s0 + 4); both(s0 + 8,'mid'); drone(s0 + 12); drone(s0 + 14); }
+        if (p === 1) { orb(s0,'L'); orb(s0 + 2,'R'); orb(s0 + 4,'L'); orb(s0 + 6,'R'); drone(s0 + 8); drone(s0 + 12); }
+        if (p === 2) { both(s0,'hi'); both(s0 + 4,'low'); both(s0 + 8,'hi'); both(s0 + 12,'low'); }
+        if (p === 3) { drone(s0); orb(s0 + 4,'L'); orb(s0 + 6,'R'); drone(s0 + 8); drone(s0 + 10); both(s0 + 12,'hi'); }
+      }
+      else if (name === 'break') {
+        if (b % 2 === 0) { E('pad', s0, {notes: ch.notes, d: 32, v: 1}); E('sub', s0, {n: ch.root, d: 30}); }
+        [4,12].forEach(i => E('hat', s0 + i, {v: .3}));
+        if (b >= 2) (b % 2 ? motifB : motifA).forEach((n,k) => { if (k % 2 === 0) E('lead', s0 + n.i, {n: degToMidi(n.deg), d: n.d * 2 + 1, v: .55}); });
+        if (b > 0 && b % 2 === 0) obst('wall', s0, {side: b % 4 === 2 ? 'L' : 'R'});
+        if (b % 2 === 0) { orb(s0,'L','hi',.25); orb(s0 + 8,'R','hi',.25); }
+        else { orb(s0,'R','mid',.25); orb(s0 + 8,'L','mid',.25); }
+      }
+      else if (name === 'outro') {
+        if (b === 0) E('crash', s0);
+        if (b < 3) [0,4,8,12].forEach(i => E('kick', s0 + i, {v: .9}));
+        if (b < 2) [4,12].forEach(i => E('clap', s0 + i, {v: .7}));
+        if (b % 2 === 0) E('pad', s0, {notes: CHORDS[0].notes, d: 32, v: .9});
+        if (b === 3) { E('crash', s0); E('kick', s0, {v: 1}); E('sub', s0, {n: 40, d: 12}); }
+        if (b === 0) [0,4,8,12].forEach(i => drone(s0 + i));
+        if (b === 1) { both(s0,'mid'); both(s0 + 8,'hi'); }
+        if (b === 2) { drone(s0); drone(s0 + 8); }
+        if (b === 3) both(s0,'hi');
+      }
+    }
+  }
+  ev.forEach(e => e.t = evTime(e)); ev.sort((a,b) => a.t - b.t);
+  map.forEach(m => m.t = stepTime(m.s)); map.sort((a,b) => a.t - b.t);
+  return {events: ev, map, sections: secs, duration: stepTime(bar * 16) + 1.5, bars: bar};
+}
+//</PURE>
+
+/* ---------------- audio ---------------- */
+const mtof = n => 440 * Math.pow(2, (n - 69) / 12);
+class Music {
+  constructor(){ this.ctx = null; this.song = null; this.t0 = 0; this.idx = 0; this.running = false; }
+  init(){
+    if (this.ctx) return;
+    const ctx = this.ctx = new (window.AudioContext || window.webkitAudioContext)({latencyHint: 'interactive'});
+    const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 5; comp.attack.value = .004; comp.release.value = .18;
+    this.master = ctx.createGain(); this.master.gain.value = .85; this.master.connect(comp); comp.connect(ctx.destination);
+    this.duck = ctx.createGain(); this.duck.connect(this.master);
+    const len = ctx.sampleRate * 1.6, ir = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6); }
+    const conv = ctx.createConvolver(); conv.buffer = ir; this.rev = ctx.createGain(); this.rev.gain.value = .22; this.rev.connect(conv); conv.connect(this.master);
+    const nb = this.noise = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), nd = nb.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+    const curve = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; curve[i] = Math.tanh(x * 3.2); } this.curve = curve;
+  }
+  start(song){ this.song = song; this.idx = 0; this.t0 = this.ctx.currentTime + 0.3; this.running = true; this.master.gain.cancelScheduledValues(0); this.master.gain.setValueAtTime(.85, this.ctx.currentTime); }
+  stop(){ this.running = false; if (this.ctx) { const t = this.ctx.currentTime; this.master.gain.cancelScheduledValues(t); this.master.gain.setValueAtTime(this.master.gain.value, t); this.master.gain.linearRampToValueAtTime(0, t + .15); } }
+  now(){ if (!this.running) return -1; const c = this.ctx; return c.currentTime - this.t0 - (c.outputLatency || c.baseLatency || 0); }
+  pump(){
+    if (!this.running) return; const ev = this.song.events, horizon = this.ctx.currentTime + 0.22;
+    while (this.idx < ev.length) { const e = ev[this.idx], t = this.t0 + e.t; if (t > horizon) break; if (t > this.ctx.currentTime - .05) this.play(e, Math.max(t, this.ctx.currentTime)); this.idx++; }
+  }
+  osc(type, f, t, dur, dest, detune = 0){ const o = this.ctx.createOscillator(); o.type = type; o.frequency.value = f; o.detune.value = detune; o.connect(dest); o.start(t); o.stop(t + dur + .05); return o; }
+  env(t, a, peak, dur, dest){ const g = this.ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(peak, t + a); g.gain.setValueAtTime(peak, t + Math.max(a, dur * .6)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur); g.connect(dest); return g; }
+  nz(t, dur, dest){ const s = this.ctx.createBufferSource(); s.buffer = this.noise; s.loop = true; s.connect(dest); s.start(t, Math.random()); s.stop(t + dur + .05); return s; }
+  filt(type, f, q, dest){ const b = this.ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; b.connect(dest); return b; }
+  play(e, t){
+    const c = this.ctx, d = (e.d || 1) * STEP, v = e.v ?? 1;
+    switch (e.type) {
+      case 'kick': {
+        const g = c.createGain(); g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.001, t + .34); g.connect(this.master);
+        const o = this.osc('sine', 165, t, .36, g); o.frequency.exponentialRampToValueAtTime(46, t + .1);
+        const k = c.createGain(); k.gain.setValueAtTime(.35 * v, t); k.gain.exponentialRampToValueAtTime(.001, t + .02); k.connect(this.master); this.osc('square', 900, t, .03, k);
+        this.duck.gain.cancelScheduledValues(t); this.duck.gain.setValueAtTime(.3, t); this.duck.gain.linearRampToValueAtTime(1, t + .24);
+        break; }
+      case 'snare': {
+        const g = c.createGain(); g.gain.setValueAtTime(.55 * v, t); g.gain.exponentialRampToValueAtTime(.001, t + .19); g.connect(this.master); g.connect(this.rev);
+        this.nz(t, .2, this.filt('bandpass', 1900, .7, g));
+        const g2 = c.createGain(); g2.gain.setValueAtTime(.4 * v, t); g2.gain.exponentialRampToValueAtTime(.001, t + .1); g2.connect(this.master);
+        const o = this.osc('triangle', 210, t, .11, g2); o.frequency.exponentialRampToValueAtTime(140, t + .09); break; }
+      case 'clap': {
+        const g = c.createGain(); g.gain.setValueAtTime(.0001, t);
+        [0, .012, .026].forEach(o => { g.gain.setValueAtTime(.45 * v, t + o); g.gain.exponentialRampToValueAtTime(.05, t + o + .01); });
+        g.gain.exponentialRampToValueAtTime(.001, t + .16); g.connect(this.master); g.connect(this.rev);
+        this.nz(t, .17, this.filt('bandpass', 1250, 1.2, g)); break; }
+      case 'hat': {
+        const g = c.createGain(); g.gain.setValueAtTime(.32 * v, t); g.gain.exponentialRampToValueAtTime(.001, t + .045); g.connect(this.master);
+        this.nz(t, .05, this.filt('highpass', 8200, .5, g)); break; }
+      case 'crash': {
+        const g = c.createGain(); g.gain.setValueAtTime(.3, t); g.gain.exponentialRampToValueAtTime(.001, t + 1.6); g.connect(this.master); g.connect(this.rev);
+        this.nz(t, 1.6, this.filt('highpass', 5200, .4, g)); break; }
+      case 'riser': {
+        const g = c.createGain(); g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.3, t + d); g.gain.linearRampToValueAtTime(0, t + d + .03); g.connect(this.master);
+        const f = this.filt('bandpass', 300, 1.4, g); f.frequency.exponentialRampToValueAtTime(9000, t + d); this.nz(t, d, f);
+        const g2 = c.createGain(); g2.gain.setValueAtTime(.0001, t); g2.gain.exponentialRampToValueAtTime(.09, t + d); g2.gain.linearRampToValueAtTime(0, t + d + .03); g2.connect(this.master);
+        const o = this.osc('sawtooth', 110, t, d, g2); o.frequency.exponentialRampToValueAtTime(880, t + d); break; }
+      case 'bass': {
+        const f0 = mtof(e.n), g = this.env(t, .004, .5 * v, d + .05, this.duck);
+        const lp = this.filt('lowpass', 250, 7, g); lp.frequency.setValueAtTime(250, t); lp.frequency.exponentialRampToValueAtTime(2100, t + .025); lp.frequency.exponentialRampToValueAtTime(320, t + d);
+        this.osc('sawtooth', f0, t, d, lp); this.osc('square', f0, t, d, lp, 7);
+        const sg = this.env(t, .004, .35 * v, d + .05, this.duck); this.osc('sine', f0, t, d, sg); break; }
+      case 'sub': { const g = this.env(t, .05, .4, d, this.duck); this.osc('sine', mtof(e.n), t, d, g); this.osc('triangle', mtof(e.n + 12), t, d, g).detune.value = 3; break; }
+      case 'wob': {
+        const f0 = mtof(e.n), g = c.createGain();
+        g.gain.setValueAtTime(.0001, t); g.gain.linearRampToValueAtTime(.34 * v, t + .008); g.gain.setValueAtTime(.34 * v, t + d - .02); g.gain.linearRampToValueAtTime(.0001, t + d); g.connect(this.duck);
+        const sh = c.createWaveShaper(); sh.curve = this.curve; sh.connect(g);
+        const lp = this.filt('lowpass', 950, 7, sh);
+        const lfo = c.createOscillator(); lfo.type = e.r >= 6 ? 'sawtooth' : 'sine'; lfo.frequency.value = e.r / BEAT;
+        const lg = c.createGain(); lg.gain.value = 820; lfo.connect(lg); lg.connect(lp.frequency); lfo.start(t); lfo.stop(t + d + .05);
+        const pre = c.createGain(); pre.gain.value = .8; pre.connect(lp);
+        this.osc('sawtooth', f0, t, d, pre, -11); this.osc('sawtooth', f0, t, d, pre, 11); this.osc('square', f0 * 2, t, d, pre, 4).detune.value = 4;
+        const bp = this.filt('bandpass', 1300, 3, sh); const lg2 = c.createGain(); lg2.gain.value = 600; lfo.connect(lg2); lg2.connect(bp.frequency); pre.connect(bp);
+        const sg = c.createGain(); sg.gain.setValueAtTime(.3, t); sg.gain.setValueAtTime(.3, t + d - .02); sg.gain.linearRampToValueAtTime(0, t + d); sg.connect(this.duck); this.osc('sine', f0, t, d, sg);
+        break; }
+      case 'stab': {
+        const g = this.env(t, .003, .12 * v, .16, this.duck); g.connect(this.rev); const lp = this.filt('lowpass', 3200, 1, g);
+        e.notes.forEach((n, i) => this.osc(i % 2 ? 'square' : 'sawtooth', mtof(n + 12), t, .16, lp, (i - 2) * 5)); break; }
+      case 'pad': {
+        const g = c.createGain(); g.gain.setValueAtTime(.0001, t); g.gain.linearRampToValueAtTime(.07 * v, t + .4); g.gain.setValueAtTime(.07 * v, t + d - .3); g.gain.linearRampToValueAtTime(.0001, t + d); g.connect(this.duck); g.connect(this.rev);
+        const lp = this.filt('lowpass', 900, .7, g); lp.frequency.linearRampToValueAtTime(2600, t + d);
+        e.notes.forEach(n => { this.osc('sawtooth', mtof(n), t, d, lp, -9); this.osc('sawtooth', mtof(n), t, d, lp, 9); }); break; }
+      case 'lead': {
+        const f0 = mtof(e.n), dur = d + .08, g = this.env(t, .012, .2 * v, dur, this.master); g.connect(this.rev);
+        const lp = this.filt('lowpass', 700, 4, g); lp.frequency.setValueAtTime(700, t); lp.frequency.exponentialRampToValueAtTime(3000, t + .05); lp.frequency.exponentialRampToValueAtTime(1500, t + dur);
+        const o1 = this.osc('sawtooth', f0, t, dur, lp), o2 = this.osc('square', f0, t, dur, lp, 6);
+        [o1, o2].forEach(o => { o.frequency.setValueAtTime(f0 * .955, t); o.frequency.exponentialRampToValueAtTime(f0, t + .045); });
+        if (dur > .25) { const vib = c.createOscillator(); vib.frequency.value = 5.6; const vg = c.createGain(); vg.gain.setValueAtTime(0, t); vg.gain.linearRampToValueAtTime(14, t + .22); vib.connect(vg); vg.connect(o1.detune); vg.connect(o2.detune); vib.start(t); vib.stop(t + dur + .05); }
+        break; }
+    }
+  }
+  sfx(kind){
+    if (!this.ctx) return; const c = this.ctx, t = c.currentTime;
+    if (kind === 'shot') { const g = c.createGain(); g.gain.setValueAtTime(.16, t); g.gain.exponentialRampToValueAtTime(.001, t + .09); g.connect(this.master); const o = this.osc('square', 1300, t, .09, g); o.frequency.exponentialRampToValueAtTime(240, t + .08); }
+    if (kind === 'hit') { const g = c.createGain(); g.gain.setValueAtTime(.2, t); g.gain.exponentialRampToValueAtTime(.001, t + .14); g.connect(this.master); g.connect(this.rev); this.osc('triangle', 1760, t, .14, g); this.osc('sine', 2640, t, .1, g); }
+    if (kind === 'punch') { const g = c.createGain(); g.gain.setValueAtTime(.22, t); g.gain.exponentialRampToValueAtTime(.001, t + .12); g.connect(this.master); const o = this.osc('sine', 520, t, .12, g); o.frequency.exponentialRampToValueAtTime(1040, t + .06); }
+    if (kind === 'ouch') { const g = c.createGain(); g.gain.setValueAtTime(.3, t); g.gain.exponentialRampToValueAtTime(.001, t + .3); g.connect(this.master); const o = this.osc('sawtooth', 160, t, .3, g); o.frequency.exponentialRampToValueAtTime(50, t + .28); }
+  }
+}
+
+/* ---------------- scene ---------------- */
+const $ = id => document.getElementById(id);
+const COL = {cyan: 0x00e5ff, pink: 0xff2bd6, yellow: 0xffd23f, red: 0xff3355, purple: 0x7a2cff};
+const SPEED = 14, LEAD = 2.0, HITZ = -0.45;
+const music = new Music(), song = generateSong(7);
+
+const renderer = new THREE.WebGLRenderer({antialias: true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true; renderer.xr.setReferenceSpaceType('local-floor');
+try { renderer.xr.setFoveation(1); } catch (e) {}
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0018); scene.fog = new THREE.Fog(0x1a0033, 25, 170);
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, .05, 500); camera.position.set(0, 1.6, 0); scene.add(camera);
+addEventListener('resize', () => { if (renderer.xr.isPresenting) return; camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+// floor grid
+const floorMat = new THREE.ShaderMaterial({
+  uniforms: {uScroll: {value: 0}, uPulse: {value: 0}},
+  vertexShader: `varying vec3 vP; void main(){ vec4 w=modelMatrix*vec4(position,1.); vP=w.xyz; gl_Position=projectionMatrix*viewMatrix*w; }`,
+  fragmentShader: `uniform float uScroll,uPulse; varying vec3 vP;
+    void main(){ vec2 g=vec2(vP.x,vP.z-uScroll)/2.; vec2 f=abs(fract(g-.5)-.5); vec2 w=fwidth(g)*1.4+.012;
+      vec2 a=smoothstep(w,vec2(0.),f); float line=max(a.x,a.y);
+      float dist=length(vP.xz); float fade=exp(-dist*.016);
+      vec3 neon=mix(vec3(1.,.17,.84),vec3(0.,.9,1.),smoothstep(0.,60.,dist));
+      float lane=smoothstep(.08,0.,abs(abs(vP.x)-1.7));
+      vec3 col=vec3(.03,0.,.08)+neon*line*fade*(.55+.7*uPulse)+vec3(1.,.82,.25)*lane*fade*.8;
+      gl_FragColor=vec4(col,1.); }`
+});
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 500), floorMat); floor.rotation.x = -Math.PI / 2; floor.position.z = -150; scene.add(floor);
+
+// sun
+{ const cv = document.createElement('canvas'); cv.width = cv.height = 512; const g = cv.getContext('2d');
+  const gr = g.createLinearGradient(0, 40, 0, 480); gr.addColorStop(0, '#ffe45c'); gr.addColorStop(.5, '#ff7a3c'); gr.addColorStop(1, '#ff2bd6');
+  g.fillStyle = gr; g.beginPath(); g.arc(256, 256, 230, 0, 7); g.fill(); g.globalCompositeOperation = 'destination-out';
+  for (let i = 0; i < 9; i++) { const y = 270 + i * 26; g.fillRect(0, y, 512, 4 + i * 2.2); }
+  const sun = new THREE.Mesh(new THREE.PlaneGeometry(110, 110), new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(cv), transparent: true, fog: false, depthWrite: false}));
+  sun.position.set(0, 30, -260); scene.add(sun); }
+// stars
+{ const p = new Float32Array(500 * 3); for (let i = 0; i < 500; i++) { const a = Math.random() * Math.PI * 2, e = Math.random() * 1.2 + .08, r = 300; p[i*3] = Math.cos(a) * Math.cos(e) * r; p[i*3+1] = Math.sin(e) * r; p[i*3+2] = Math.sin(a) * Math.cos(e) * r; }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({color: 0xffffff, size: 1.3, fog: false, sizeAttenuation: true}))); }
+// towers (two tiles scrolling)
+const TILE = 240, city = new THREE.Group(); scene.add(city);
+{ const N = 44, rnd = mulberry32(3), box = new THREE.BoxGeometry(1, 1, 1), m = new THREE.Matrix4(), q = new THREE.Quaternion(), col = new THREE.Color();
+  const data = []; for (let i = 0; i < N; i++) { const side = i % 2 ? 1 : -1; data.push({x: side * (7 + rnd() * 26), z: -rnd() * TILE, w: 2 + rnd() * 4, h: 4 + rnd() * 22, c: rnd() < .5 ? COL.cyan : COL.pink}); }
+  for (let k = 0; k < 2; k++) {
+    const body = new THREE.InstancedMesh(box, new THREE.MeshBasicMaterial({color: 0x160a33}), N), cap = new THREE.InstancedMesh(box, new THREE.MeshBasicMaterial(), N * 2);
+    data.forEach((d, i) => {
+      body.setMatrixAt(i, m.compose(new THREE.Vector3(d.x, d.h / 2, d.z), q, new THREE.Vector3(d.w, d.h, d.w)));
+      cap.setMatrixAt(i * 2, m.compose(new THREE.Vector3(d.x, d.h + .08, d.z), q, new THREE.Vector3(d.w + .1, .16, d.w + .1))); cap.setColorAt(i * 2, col.setHex(d.c));
+      cap.setMatrixAt(i * 2 + 1, m.compose(new THREE.Vector3(d.x, d.h * .55, d.z), q, new THREE.Vector3(d.w + .1, .1, d.w + .1))); cap.setColorAt(i * 2 + 1, col.setHex(d.c));
+    });
+    body.position.z = cap.position.z = -k * TILE; body.frustumCulled = cap.frustumCulled = false; city.add(body, cap);
+  } }
+
+/* ---------------- gameplay objects ---------------- */
+const world = new THREE.Group(); scene.add(world);
+let H = 1.6;
+const basic = (color, o = {}) => new THREE.MeshBasicMaterial({color, ...o});
+const pool = (n, make) => { const a = []; for (let i = 0; i < n; i++) { const o = make(); o.visible = false; world.add(o); a.push(o); } return a; };
+const free = p => p.find(o => !o.visible);
+
+const gOct = new THREE.OctahedronGeometry(.42), gRing = new THREE.TorusGeometry(.62, .035, 6, 28), gOrb = new THREE.SphereGeometry(.15, 16, 12), gShell = new THREE.SphereGeometry(.22, 12, 8), gBox = new THREE.BoxGeometry(1, 1, 1);
+const drones = pool(14, () => { const g = new THREE.Group(); g.core = new THREE.Mesh(gOct, basic(COL.yellow)); g.wire = new THREE.Mesh(gOct, basic(0xffffff, {wireframe: true})); g.wire.scale.setScalar(1.3); g.ring = new THREE.Mesh(gRing, basic(0xffffff)); g.add(g.core, g.wire, g.ring); return g; });
+const mkOrbs = c => pool(12, () => { const g = new THREE.Group(); g.add(new THREE.Mesh(gOrb, basic(c)), new THREE.Mesh(gShell, basic(c, {transparent: true, opacity: .28, depthWrite: false}))); return g; });
+const orbs = {L: mkOrbs(COL.cyan), R: mkOrbs(COL.pink)};
+const walls = pool(6, () => { const g = new THREE.Group(); g.box = new THREE.Mesh(gBox, basic(COL.red, {transparent: true, opacity: .42, depthWrite: false})); g.edge = new THREE.LineSegments(new THREE.EdgesGeometry(gBox), new THREE.LineBasicMaterial({color: 0xff8899})); g.add(g.box, g.edge); return g; });
+const bursts = pool(10, () => new THREE.Mesh(gOrb, basic(0xffffff, {transparent: true, depthWrite: false, blending: THREE.AdditiveBlending})));
+const tracers = pool(4, () => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3)); const l = new THREE.Line(g, new THREE.LineBasicMaterial({color: 0xffffff, transparent: true})); l.frustumCulled = false; return l; });
+
+// text
+const mkCanvasTex = (w, h) => { const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; return {cv, g: cv.getContext('2d'), tex}; };
+const LABELS = {PERFECT: '#ffd23f', GREAT: '#00e5ff', OK: '#ffffff', MISS: '#ff3355', 'SQUAT!': '#7dff6b', 'DODGE!': '#7dff6b', OUCH: '#ff3355'}, labelTex = {};
+function buildLabels(){ for (const k in LABELS) { const c = mkCanvasTex(256, 64); c.g.font = '800 40px Orbitron,sans-serif'; c.g.textAlign = 'center'; c.g.textBaseline = 'middle'; c.g.fillStyle = LABELS[k]; c.g.shadowColor = LABELS[k]; c.g.shadowBlur = 12; c.g.fillText(k, 128, 34); c.tex.needsUpdate = true; labelTex[k] = c.tex; } }
+const popups = pool(8, () => new THREE.Sprite(new THREE.SpriteMaterial({transparent: true, depthWrite: false, depthTest: false})));
+function popup(text, pos, scale = 1){ const s = free(popups); if (!s || !labelTex[text]) return; s.material.map = labelTex[text]; s.material.opacity = 1; s.position.copy(pos); s.scale.set(1.6 * scale, .4 * scale, 1); s.userData = {t: 0, vy: .9 * scale}; s.visible = true; }
+function burst(pos, color, size = 1){ const b = free(bursts); if (!b) return; b.material.color.setHex(color); b.position.copy(pos); b.userData = {t: 0, size}; b.visible = true; }
+
+const hud = mkCanvasTex(1024, 256); const hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(8, 2), basic(0xffffff, {map: hud.tex, transparent: true, depthWrite: false, fog: false})); hudMesh.position.set(0, 4.3, -11); world.add(hudMesh);
+const panel = mkCanvasTex(1024, 640); const panelMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.5), basic(0xffffff, {map: panel.tex, transparent: true, depthWrite: false, fog: false})); panelMesh.position.set(0, 1.5, -2.6); panelMesh.visible = false; world.add(panelMesh);
+function drawHud(){
+  const g = hud.g; g.clearRect(0, 0, 1024, 256); g.textBaseline = 'middle';
+  g.font = '500 30px Orbitron,sans-serif'; g.fillStyle = '#00e5ff'; g.textAlign = 'left'; g.fillText('SCORE', 30, 50); g.textAlign = 'right'; g.fillStyle = '#ff2bd6'; g.fillText('COMBO', 994, 50);
+  g.font = '800 96px Orbitron,sans-serif'; g.fillStyle = '#fff'; g.shadowColor = '#00e5ff'; g.shadowBlur = 18; g.textAlign = 'left'; g.fillText(String(S.score), 30, 140);
+  g.shadowColor = '#ff2bd6'; g.textAlign = 'right'; g.fillText(S.combo + '', 994, 140); g.shadowBlur = 0;
+  g.font = '800 44px Orbitron,sans-serif'; g.fillStyle = '#ffd23f'; g.textAlign = 'center'; g.fillText('x' + mult(), 512, 140);
+  const p = Math.max(0, Math.min(1, music.now() / song.duration)); g.fillStyle = 'rgba(255,255,255,.2)'; g.fillRect(30, 222, 964, 8); g.fillStyle = '#ffd23f'; g.fillRect(30, 222, 964 * p, 8);
+  hud.tex.needsUpdate = true;
+}
+function drawPanel(title, lines, foot){
+  const g = panel.g; g.clearRect(0, 0, 1024, 640); g.fillStyle = 'rgba(10,0,24,.86)'; g.fillRect(0, 0, 1024, 640); g.strokeStyle = '#ff2bd6'; g.lineWidth = 6; g.strokeRect(6, 6, 1012, 628);
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = '800 72px Orbitron,sans-serif'; g.fillStyle = '#ffd23f'; g.fillText(title, 512, 80);
+  g.font = '500 38px Orbitron,sans-serif'; lines.forEach((l, i) => { g.fillStyle = l[1] || '#fff'; g.fillText(l[0], 512, 170 + i * 58); });
+  g.font = '800 40px Orbitron,sans-serif'; g.fillStyle = '#00e5ff'; g.fillText(foot, 512, 580); panel.tex.needsUpdate = true;
+}
+
+/* ---------------- controllers ---------------- */
+const hands = [0, 1].map(i => {
+  const ray = renderer.xr.getController(i), grip = renderer.xr.getControllerGrip(i), h = {ray, grip, hand: 'none', src: null, prev: new THREE.Vector3(), has: false};
+  const gun = new THREE.Group(); const body = new THREE.Mesh(gBox, basic(0x222233)); body.scale.set(.035, .05, .17); body.position.set(0, -.01, -.05);
+  h.tip = new THREE.Mesh(gBox, basic(0xffffff)); h.tip.scale.set(.02, .02, .05); h.tip.position.set(0, 0, -.15);
+  const lg = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, -.18), new THREE.Vector3(0, 0, -14)]); h.laser = new THREE.Line(lg, new THREE.LineBasicMaterial({color: 0xffffff, transparent: true, opacity: .22}));
+  gun.add(body, h.tip, h.laser); ray.add(gun);
+  h.glove = new THREE.Mesh(new THREE.SphereGeometry(.07, 12, 8), basic(0xffffff, {transparent: true, opacity: .75})); grip.add(h.glove);
+  ray.addEventListener('connected', e => { h.src = e.data; h.hand = e.data.handedness; const c = h.hand === 'left' ? COL.cyan : COL.pink; h.tip.material.color.setHex(c); h.laser.material.color.setHex(c); h.glove.material.color.setHex(c); });
+  ray.addEventListener('disconnected', () => { h.src = null; h.has = false; });
+  ray.addEventListener('selectstart', () => onTrigger(h));
+  scene.add(ray, grip); return h;
+});
+const buzz = (h, i, ms) => { try { h.src?.gamepad?.hapticActuators?.[0]?.pulse(i, ms)?.catch?.(() => {}); } catch (e) {} };
+
+/* ---------------- state ---------------- */
+let mode = 'none', state = 'menu', stateAt = 0, mi = 0, live = [], hudDirty = true, lastHud = 0;
+const S = {};
+const mult = () => Math.min(8, 1 + Math.floor(S.combo / 10));
+function reset(){ Object.assign(S, {score: 0, combo: 0, maxCombo: 0, hits: 0, total: 0, perfect: 0, shots: 0, punches: 0, squats: 0, dodges: 0, ouch: 0, move: 0, moveT: 0}); mi = 0; live.forEach(o => o.m.visible = false); live = []; hudDirty = true; }
+reset();
+const v1 = new THREE.Vector3(), v2 = new THREE.Vector3(), v3 = new THREE.Vector3(), headW = new THREE.Vector3(), headL = new THREE.Vector3();
+function award(base, label, pos, scale){ S.combo++; S.maxCombo = Math.max(S.maxCombo, S.combo); S.hits++; S.total++; if (label === 'PERFECT') S.perfect++; S.score += base * mult(); popup(label, pos, scale); hudDirty = true; }
+function miss(pos, scale, label = 'MISS'){ S.combo = 0; S.total++; popup(label, pos, scale); hudDirty = true; }
+const rate = dt => { const a = Math.abs(dt); return a < .075 ? ['PERFECT', 100] : a < .15 ? ['GREAT', 70] : ['OK', 40]; };
+
+function startSong(){
+  reset();
+  if (mode === 'vr') { camera.getWorldPosition(headW); H = Math.max(1.0, Math.min(2.1, headW.y)); world.position.set(headW.x, 0, headW.z); } else { H = 1.6; world.position.set(0, 0, 0); }
+  panelMesh.visible = false; music.start(song); state = 'playing'; stateAt = performance.now();
+}
+function finish(){
+  music.stop(); state = 'results'; stateAt = performance.now(); live.forEach(o => o.m.visible = false); live = [];
+  const acc = S.total ? Math.round(100 * S.hits / S.total) : 0, mins = song.duration / 60;
+  let kcal = null; if (mode === 'vr' && S.moveT > 5) { const sp = S.move / S.moveT, met = Math.max(3.5, Math.min(11, 3.5 + 2.4 * sp + (S.squats / mins) * .12)); kcal = Math.round(met * 80 * mins / 60); }
+  let best = 0; try { best = +localStorage.getItem('np_best') || 0; if (S.score > best) localStorage.setItem('np_best', S.score); } catch (e) {}
+  const lines = [[`SCORE  ${S.score}` + (S.score > best && best ? '   NEW BEST!' : ''), '#fff'], [`ACCURACY  ${acc}%   ·   MAX COMBO  ${S.maxCombo}`, '#00e5ff'], [`SHOTS  ${S.shots}   ·   PUNCHES  ${S.punches}`, '#ff2bd6'], [`SQUATS  ${S.squats}   ·   DODGES  ${S.dodges}`, '#7dff6b'], [kcal != null ? `≈ ${kcal} KCAL  (rough, 80 kg)` : `BEST  ${Math.max(best, S.score)}`, '#ffd23f']];
+  if (mode === 'vr') { drawPanel('WORKOUT COMPLETE', lines, 'PULL TRIGGER TO GO AGAIN'); panelMesh.visible = true; }
+  else { $('res').textContent = lines.map(l => l[0]).join('\n'); $('ui').style.display = 'flex'; mode = 'none'; state = 'menu'; }
+}
+function showReady(){ state = 'ready'; stateAt = performance.now(); world.position.set(0, 0, 0); drawPanel('NEON PULSE', [['YELLOW DRONES — shoot as the ring closes', '#ffd23f'], ['CYAN ORBS — punch with LEFT hand', '#00e5ff'], ['PINK ORBS — punch with RIGHT hand', '#ff2bd6'], ['RED BEAMS / WALLS — squat or lean', '#ff3355'], ['Stand tall, clear 2 m around you', '#fff']], 'PULL TRIGGER TO START'); panelMesh.visible = true; }
+
+function shoot(origin, dir, h){
+  S.shots++; music.sfx('shot'); const now = music.now(); let best = null, bd = 1e9;
+  for (const o of live) {
+    const dt = now - o.it.t;
+    if (o.kind === 'drone' && dt >= -.45 && dt <= .22) { world.localToWorld(v1.copy(o.m.position)); v2.copy(v1).sub(origin); const tp = v2.dot(dir); if (tp > 0) { const d = v2.addScaledVector(dir, -tp).length(); if (d < .78 && d < bd) { bd = d; best = o; } } }
+    else if (mode === 'flat' && o.kind === 'orb' && Math.abs(dt) < .32) { world.localToWorld(v1.copy(o.m.position)); v2.copy(v1).sub(origin); const tp = v2.dot(dir); if (tp > 0) { const d = v2.addScaledVector(dir, -tp).length(); if (d < .4 && d < bd) { bd = d; best = o; } } }
+  }
+  const tr = free(tracers);
+  if (tr) { const p = tr.geometry.attributes.position; world.worldToLocal(v2.copy(origin)); v3.copy(origin).addScaledVector(dir, best ? origin.distanceTo(world.localToWorld(v1.copy(best.m.position))) : 40); world.worldToLocal(v3); p.setXYZ(0, v2.x, v2.y, v2.z); p.setXYZ(1, v3.x, v3.y, v3.z); p.needsUpdate = true; tr.material.color.setHex(h ? (h.hand === 'left' ? COL.cyan : COL.pink) : COL.yellow); tr.userData = {t: 0}; tr.visible = true; }
+  if (h) buzz(h, .5, 35);
+  if (best) {
+    const dt = now - best.it.t;
+    if (best.kind === 'drone') { const [lab, pts] = rate(dt); award(pts, lab, best.m.position, 3); burst(best.m.position, COL.yellow, 3); music.sfx('hit'); }
+    else { award(80, Math.abs(dt) < .1 ? 'PERFECT' : 'GREAT', v3.set(best.it.x * 2, H + best.it.yo * .6, -3), 1); S.punches++; burst(best.m.position, best.it.hand === 'L' ? COL.cyan : COL.pink, 1.4); music.sfx('punch'); }
+    best.m.visible = false; best.dead = true; if (h) buzz(h, 1, 60);
+  }
+}
+function onTrigger(h){
+  const el = performance.now() - stateAt;
+  if (state === 'ready' && el > 600) return startSong();
+  if (state === 'results' && el > 1500) return startSong();
+  if (state === 'playing') { h.ray.getWorldPosition(v1); const o = v1.clone(), d = new THREE.Vector3(0, 0, -1).applyQuaternion(h.ray.getWorldQuaternion(new THREE.Quaternion())); shoot(o, d, h); }
+}
+const rc = new THREE.Raycaster();
+renderer.domElement.addEventListener('pointerdown', e => { if (mode !== 'flat' || state !== 'playing') return; rc.setFromCamera(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera); shoot(rc.ray.origin.clone(), rc.ray.direction.clone(), null); });
+
+function spawn(it){
+  if (it.type === 'drone') { const m = free(drones); if (!m) return; m.visible = true; live.push({kind: 'drone', it, m}); }
+  else if (it.type === 'orb') { const m = free(orbs[it.hand]); if (!m) return; m.visible = true; m.scale.setScalar(1); live.push({kind: 'orb', it, m}); }
+  else { const m = free(walls); if (!m) return; m.visible = true;
+    if (it.type === 'duck') { m.scale.set(3.6, .9, .5); m.userData.y = H - .30 + .45; m.userData.x = 0; }
+    else { m.scale.set(1.75, 2.5, .5); m.userData.y = 1.25; m.userData.x = (it.side === 'L' ? -1 : 1) * (.875 - .15); }
+    live.push({kind: it.type, it, m, pz: -99}); }
+}
+
+/* ---------------- loop ---------------- */
+let last = performance.now();
+function frame(){
+  const tN = performance.now(), dt = Math.min(.05, (tN - last) / 1000); last = tN;
+  music.pump(); const now = music.now(), playing = state === 'playing';
+  const phase = playing ? (((now / BEAT) % 1) + 1) % 1 : (tN / 1000 / BEAT) % 1, pulse = Math.pow(1 - phase, 3);
+  floorMat.uniforms.uScroll.value = (floorMat.uniforms.uScroll.value + SPEED * dt) % 2; floorMat.uniforms.uPulse.value = pulse;
+  city.position.z = (city.position.z + SPEED * dt) % TILE;
+
+  if (mode === 'vr') camera.getWorldPosition(headW); else headW.set(0, 1.6, 0);
+  world.worldToLocal(headL.copy(headW));
+
+  if (playing) {
+    while (mi < song.map.length && song.map[mi].t - LEAD <= now) spawn(song.map[mi++]);
+    // hand positions (local) + movement tracking
+    const hp = {};
+    if (mode === 'vr') for (const h of hands) { if (!h.src) continue; h.grip.getWorldPosition(v1); if (h.has) { const sp = v1.distanceTo(h.prev) / dt; if (sp < 12) S.move += sp * dt * .5; } h.prev.copy(v1); h.has = true; hp[h.hand === 'left' ? 'L' : 'R'] = {p: world.worldToLocal(v1.clone()), h}; }
+    if (mode === 'vr') S.moveT += dt;
+    for (const o of live) {
+      if (o.dead) continue; const d = now - o.it.t, m = o.m, it = o.it;
+      if (o.kind === 'drone') {
+        const a = Math.max(0, Math.min(1, (d + LEAD) / (LEAD - .75))), e = 1 - Math.pow(1 - a, 3);
+        m.position.set(it.x * (.4 + .6 * e), it.y + Math.sin(tN / 300 + it.s) * .08, -75 + (it.z + 75) * e);
+        const armed = d >= -.45; m.core.material.color.setHex(armed ? COL.yellow : 0x8a6a10); m.core.rotation.y += dt * 3; m.wire.rotation.y -= dt * 2;
+        m.ring.scale.setScalar(1 + Math.max(0, Math.min(1.1, -d)) * 2.4); m.ring.visible = d < .05;
+        if (d > .22) { miss(m.position, 3); m.visible = false; o.dead = true; }
+      } else if (o.kind === 'orb') {
+        m.position.set(it.x, H + it.yo, HITZ + d * SPEED); m.scale.setScalar(1 + pulse * .15);
+        const hd = hp[it.hand];
+        if (hd && Math.abs(d) < .14) { const dx = hd.p.x - it.x, dy = hd.p.y - (H + it.yo); if (dx * dx + dy * dy < .34 * .34 && hd.p.z < headL.z + .15) { m.position.z = hd.p.z; award(80, Math.abs(d) < .06 ? 'PERFECT' : 'GREAT', v3.set(it.x * 2, H + it.yo * .6, -3), 1); S.punches++; burst(m.position, it.hand === 'L' ? COL.cyan : COL.pink, 1.4); music.sfx('punch'); buzz(hd.h, 1, 70); m.visible = false; o.dead = true; continue; } }
+        if (d > .16) { v1.set(it.x * 2, H + it.yo * .6, -3); miss(v1, 1); m.visible = false; o.dead = true; }
+      } else {
+        const z = d * SPEED + headL.z * 0; m.position.set(m.userData.x, m.userData.y, z);
+        if (o.pz < headL.z && z >= headL.z && mode === 'vr') {
+          let hit; if (o.kind === 'duck') hit = headL.y > H - .38; else hit = it.side === 'L' ? headL.x < .27 : headL.x > -.27;
+          v1.set(0, H - .1, -2.2);
+          if (hit) { S.ouch++; miss(v1, 1.3, 'OUCH'); music.sfx('ouch'); hands.forEach(h => buzz(h, 1, 180)); }
+          else { if (o.kind === 'duck') { S.squats++; award(60, 'SQUAT!', v1, 1.3); } else { S.dodges++; award(60, 'DODGE!', v1, 1.3); } }
+        }
+        o.pz = z; if (z > 4) { m.visible = false; o.dead = true; }
+      }
+    }
+    live = live.filter(o => !o.dead);
+    if (now > song.duration) finish();
+    if ((hudDirty && tN - lastHud > 60) || tN - lastHud > 500) { drawHud(); hudDirty = false; lastHud = tN; }
+  }
+  for (const s of popups) if (s.visible) { s.userData.t += dt; s.position.y += s.userData.vy * dt; s.material.opacity = 1 - s.userData.t / .6; if (s.userData.t > .6) s.visible = false; }
+  for (const b of bursts) if (b.visible) { b.userData.t += dt; const k = b.userData.t / .25; b.scale.setScalar(b.userData.size * (1 + k * 3)); b.material.opacity = .8 * (1 - k); if (k >= 1) b.visible = false; }
+  for (const t of tracers) if (t.visible) { t.userData.t += dt; t.material.opacity = 1 - t.userData.t / .09; if (t.userData.t > .09) t.visible = false; }
+  hudMesh.visible = state === 'playing';
+  renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(frame);
+
+/* ---------------- entry ---------------- */
+async function enterVR(){
+  music.init(); music.ctx.resume();
+  try {
+    const session = await navigator.xr.requestSession('immersive-vr', {optionalFeatures: ['local-floor', 'bounded-floor']});
+    await renderer.xr.setSession(session); mode = 'vr'; $('ui').style.display = 'none'; $('res').textContent = ''; showReady();
+    session.addEventListener('visibilitychange', () => { if (session.visibilityState === 'visible') music.ctx.resume(); else music.ctx.suspend(); });
+    session.addEventListener('end', () => { music.stop(); music.ctx.resume(); mode = 'none'; state = 'menu'; reset(); panelMesh.visible = false; world.position.set(0, 0, 0); $('ui').style.display = 'flex'; });
+  } catch (err) { $('note').textContent = 'Could not start VR here (' + (err.name || 'error') + '). See the note below the buttons.'; }
+}
+$('bvr').addEventListener('click', enterVR);
+$('bflat').addEventListener('click', () => { music.init(); music.ctx.resume(); mode = 'flat'; $('ui').style.display = 'none'; $('res').textContent = ''; startSong(); });
+document.addEventListener('visibilitychange', () => { if (!music.ctx) return; if (document.hidden) music.ctx.suspend(); else music.ctx.resume(); });
+
+(async () => {
+  try { await Promise.race([document.fonts.load('800 40px Orbitron'), new Promise(r => setTimeout(r, 1500))]); } catch (e) {}
+  buildLabels(); drawHud();
+  let ok = false; try { ok = !!(navigator.xr && await navigator.xr.isSessionSupported('immersive-vr')); } catch (e) {}
+  $('bvr').disabled = !ok;
+  $('note').textContent = ok ? 'Headset detected. Clear 2 m of space, then Enter VR.' : 'VR isn’t available in this view. Preview works here; on a Quest, open this page in the Quest Browser.';
+  $('tag').textContent = `Track 01 · ${BPM} BPM · ${Math.round(song.duration)}s · ${song.map.length} targets`;
+})();
+</script>
+</body>
+</html>
